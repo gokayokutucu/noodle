@@ -3,8 +3,9 @@
 # Noodle
 
 Interactive JSON-to-Graph visualizer and editor built with D3.js.
+The purpose of this project is not only visualization but also to create relationships between different data models for AI/RAG. These relationships are exported as triples (subject–predicate–object) to feed into AI training or Retrieval-Augmented Generation (RAG) pipelines.
 
-![demo](./screenshot.png) <!-- İstersen ekran görüntüsü ekleyebilirsin -->
+![demo](./screenshot.png)
 
 ## Features
 
@@ -51,6 +52,7 @@ No build step is required; everything runs directly in the browser.
 
 Example triple output:
 
+
 ```json
 {
   "triples": [
@@ -61,6 +63,69 @@ Example triple output:
 }
 ```
 
+## Data Model & Schema
+
+The graph is backed by a JSON document that describes models, items, and their links. The format is designed to be simple for humans to edit, while still validatable against a JSON Schema.
+
+### Example JSON
+```json
+{
+  "version": "1.0",
+  "nodes": [
+    { "id": "Apple", "type": "model", "label": "Apple" },
+    { "id": "Apple.iPhone", "type": "item", "label": "iPhone", "of": "Apple", "links": [
+      { "target": "Sony", "rel": "mapsTo" }
+    ]},
+    { "id": "Sony", "type": "model", "label": "Sony" }
+  ]
+}
+```
+
+### JSON Schema
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["version", "nodes"],
+  "properties": {
+    "version": { "type": "string" },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "type": { "type": "string", "enum": ["model", "item"] },
+          "label": { "type": "string" },
+          "of": { "type": "string" },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["target", "rel"],
+              "additionalProperties": false,
+              "properties": {
+                "target": { "type": "string", "minLength": 1 },
+                "rel": { "type": "string", "minLength": 1 },
+                "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                "note": { "type": "string" },
+                "meta": { "type": "object", "additionalProperties": true },
+                "createdAt": { "type": "string", "format": "date-time" },
+                "createdBy": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+This schema ensures that nodes and their relationships are well-formed and suitable for use in downstream AI/RAG pipelines.
+
 ## Roadmap
 
 - [ ] Edge deletion support  
@@ -70,4 +135,4 @@ Example triple output:
 
 ## License
 
-MIT
+Apache License
