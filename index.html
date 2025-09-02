@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<meta charset="utf-8" />
+<title>JSON Model ↔ Item Mapper (D3 v7)</title>
+<style>
+  /* --- Visual styles --- */
+  body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+  svg { width: 100vw; height: 100vh; background: #fff; }
+  .link { stroke: #999; stroke-opacity: 0.8; }
+  .link.invisible { stroke-opacity: 0.08; } /* layout-only links */
+  .link.user { stroke-opacity: 0.08; }
+  .node.model circle { fill: #fff; stroke: #111; stroke-width: 2; }
+  .node.item  circle { fill: #111; stroke: #111; stroke-width: 1; }
+  .node text { font-size: 12px; pointer-events: none; user-select: none; }
+  .node.model text { font-weight: 600; }
+  .drop-target circle { stroke: #1a73e8 !important; stroke-width: 3 !important; }
+  .dragging circle { opacity: 0.9; }
+  #app { display: flex; width: 100vw; height: 100vh; min-height: 0; }
+  #sidebar { width: 380px; border-right: 1px solid #e5e7eb; background: #fafafa; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  #sidebar .sidebar-header { padding: 10px 12px; display: flex; align-items: baseline; justify-content: space-between; }
+  #schemaStatus { font-size: 12px; color: #555; }
+  #jsonView { flex: 1; width: 100%; padding: 10px 12px; border: 0; resize: none; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; background: #fff; height: 100%; overflow: scroll; white-space: pre; scrollbar-gutter: stable both-edges; overscroll-behavior: contain; min-width: 0; }
+  svg { flex: 1; width: auto; height: 100%; }
+  #errorBar { position: fixed; left: 0; right: 0; bottom: 0; height: 40px; line-height: 40px; padding: 0 12px; background: #fdecea; color: #b00020; border-top: 1px solid #f5c2c0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; font-size: 13px; display: none; }
+
+  /* Header bar */
+  #topbar { position: fixed; top: 0; left: 0; right: 0; height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; background: #0f172a; color: #fff; z-index: 10; }
+  #topbar .brand { font-weight: 700; letter-spacing: 0.2px; }
+  #topbar .actions { display: flex; gap: 8px; }
+  #topbar .actions button { background: #1f2937; color: #fff; border: 1px solid #374151; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+  #topbar .actions button:hover { background: #374151; }
+
+  #topbar .brand { display: flex; align-items: center; gap: 8px; }
+  #topbar .brand .icon-btn {
+    background: #1f2937; color: #fff; border: 1px solid #374151;
+    padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 14px; line-height: 1;
+  }
+  #topbar .brand .icon-btn:hover { background: #374151; }
+
+  /* Sidebar collapse animation/state */
+  #sidebar { transition: width 200ms ease; }
+  body.sidebar-hidden #sidebar { width: 0; border-right: 0; padding: 0; overflow: hidden; }
+  /* Zoom buttons */
+  #topbar .actions .small { padding: 4px 10px; font-size: 12px; }
+  /* Pan mode cursors */
+  body.pan-mode svg { cursor: grab; }
+  body.panning svg { cursor: grabbing; }
+  /* Force vertical scrollbar track reservation even on mac overlay */
+  #jsonView { -webkit-overflow-scrolling: auto; }
+
+  /* Layout offset for header */
+  #app { display: flex; width: 100vw; height: calc(100vh - 48px); padding-top: 48px; box-sizing: border-box; min-height: 0; }
+
+  /* Textarea scrollbars */
+  #jsonView { overflow: scroll; white-space: pre; height: 100%; scrollbar-gutter: stable both-edges; }
+
+  /* Custom scrollbar visuals */
+  #jsonView::-webkit-scrollbar { width: 10px; height: 10px; }
+  #jsonView::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; }
+  #jsonView::-webkit-scrollbar-track { background: #f1f5f9; }
+  #jsonView { scrollbar-width: thin; scrollbar-color: #cbd5e1 #f1f5f9; }
+
+  /* Modal */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 20; }
+  .modal { position: fixed; z-index: 21; top: 10vh; left: 50%; transform: translateX(-50%); width: min(860px, 92vw); max-height: 80vh; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); display: flex; flex-direction: column; }
+  .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid #eee; }
+  .modal-header h3 { margin: 0; font-size: 16px; }
+  .modal-header #btnCloseModal { background: transparent; border: none; font-size: 20px; line-height: 1; cursor: pointer; }
+  .modal-body { padding: 12px 16px; overflow: auto; }
+  .modal-body pre { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; }
+  .modal-footer { padding: 12px 16px; border-top: 1px solid #eee; display: flex; justify-content: flex-end; }
+  .modal-footer #btnCopy { background: #0ea5e9; color: #fff; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+  .modal-footer #btnCopy:hover { filter: brightness(0.95); }
+</style>
+<body>
+<header id="topbar">
+  <div class="brand">
+    <button id="btnToggleSidebar" class="icon-btn" aria-label="Toggle sidebar" title="Toggle sidebar">☰</button>
+    <span>Noodle</span>
+  </div>
+  <div class="actions">
+    <button id="btnShare" type="button">Share</button>
+    <button id="btnExport" type="button">Export</button>
+    <button id="btnZoomIn"  type="button" class="small">+</button>
+    <button id="btnZoomOut" type="button" class="small">−</button>
+    <button id="btnFit"     type="button" class="small">Fit</button>
+  </div>
+</header>
+<div id="app">
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <h3>User JSON</h3>
+      <div id="schemaStatus">validating…</div>
+    </div>
+    <textarea id="jsonView" spellcheck="false" wrap="off"></textarea>
+  </aside>
+  <svg></svg>
+  <div id="errorBar" role="alert"></div>
+  <!-- Export Modal -->
+  <div id="modalOverlay" class="modal-overlay" style="display:none"></div>
+  <div id="exportModal" class="modal" style="display:none">
+    <div class="modal-header">
+      <h3>Edge Triples Export</h3>
+      <button id="btnCloseModal" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <pre id="exportContent" aria-label="Export content"></pre>
+    </div>
+    <div class="modal-footer">
+      <button id="btnCopy" type="button">Copy to clipboard</button>
+    </div>
+  </div>
+</div>
+<script type="module">
+
+function triplesExport() {
+  // Build triples from current graph state.
+  const triples = [];
+  // User links: item -> model with given rel
+  for (const l of userLinks) {
+    const s = idOf(l.source);
+    const o = idOf(l.target);
+    const p = l.rel || "mapsTo";
+    triples.push({ s, p, o });
+  }
+  // Belongs-to relations for items to their parent model (useful for RAG context)
+  for (const n of nodes) {
+    if (n.type === "item" && n.model) {
+      triples.push({ s: n.id, p: "belongsTo", o: n.model });
+    }
+  }
+  return triples;
+}
+
+function openModalWithContent(text) {
+  const overlay = document.getElementById("modalOverlay");
+  const modal = document.getElementById("exportModal");
+  const pre = document.getElementById("exportContent");
+  pre.textContent = text;
+  overlay.style.display = "block";
+  modal.style.display = "flex";
+}
+function closeModal() {
+  const overlay = document.getElementById("modalOverlay");
+  const modal = document.getElementById("exportModal");
+  overlay.style.display = "none";
+  modal.style.display = "none";
+}
+
+/* -----------------------------
+ * Demo data (pretend 2 JSONs)
+ * -----------------------------
+ * In practice, parse your two JSON documents, extract:
+ *  - models: top-level objects (white nodes)
+ *  - items: fields/elements under those models (black nodes)
+ */
+const userGraph = {
+  version: "1.0",
+  nodes: [
+    { id: "Apple",   type: "model", label: "Apple" },
+    { id: "Samsung", type: "model", label: "Samsung" },
+    { id: "Nokia",   type: "model", label: "Nokia" },
+    { id: "Sony",    type: "model", label: "Sony" },
+
+    { id: "Apple.iPhone", type: "item", label: "iPhone", of: "Apple",
+      links: [ { target: "Sony", rel: "mapsTo" } ] },
+    { id: "Apple.iPad",   type: "item", label: "iPad",   of: "Apple" },
+    { id: "Apple.Watch",  type: "item", label: "Watch",  of: "Apple" },
+    { id: "Apple.Mac",    type: "item", label: "Mac",    of: "Apple" },
+
+    { id: "Samsung.Galaxy S",   type: "item", label: "Galaxy S",   of: "Samsung" },
+    { id: "Samsung.Galaxy Tab", type: "item", label: "Galaxy Tab", of: "Samsung" },
+    { id: "Samsung.Gear",       type: "item", label: "Gear",       of: "Samsung" },
+
+    { id: "Nokia.3310", type: "item", label: "3310", of: "Nokia" },
+    { id: "Nokia.Lumia", type: "item", label: "Lumia", of: "Nokia" },
+    { id: "Nokia.Maps",  type: "item", label: "Maps",  of: "Nokia" },
+
+    { id: "Sony.Xperia",  type: "item", label: "Xperia",  of: "Sony" },
+    { id: "Sony.Walkman", type: "item", label: "Walkman", of: "Sony" }
+  ]
+};
+
+/* ---------------------------------------
+ * D3 setup
+ * ------------------------------------- */
+import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm";
+
+let spaceDown = false;
+function isTypingTarget(el) {
+  const t = (el && el.tagName) ? el.tagName.toLowerCase() : "";
+  return t === "input" || t === "textarea" || el.isContentEditable;
+}
+window.addEventListener("keydown", (e) => {
+  if (e.code === "Space" && !isTypingTarget(e.target)) {
+    spaceDown = true;
+    document.body.classList.add("pan-mode");
+    e.preventDefault();
+  }
+});
+window.addEventListener("keyup", (e) => {
+  if (e.code === "Space") {
+    spaceDown = false;
+    document.body.classList.remove("pan-mode");
+    document.body.classList.remove("panning");
+  }
+});
+
+function validateUserGraph(data) {
+  try {
+    if (!data || typeof data !== "object") return false;
+    if (typeof data.version !== "string") return false;
+    if (!Array.isArray(data.nodes)) return false;
+    for (const n of data.nodes) {
+      if (!n || typeof n !== "object") return false;
+      if (typeof n.id !== "string" || !n.id) return false;
+      if (n.type !== "model" && n.type !== "item") return false;
+      if (n.links != null) {
+        if (!Array.isArray(n.links)) return false;
+        for (const l of n.links) {
+          if (!l || typeof l !== "object") return false;
+          if (typeof l.target !== "string" || !l.target) return false;
+          if (typeof l.rel !== "string" || !l.rel) return false;
+        }
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const svg = d3.select("svg");
+const width = svg.node().clientWidth;
+const height = svg.node().clientHeight;
+
+/* Arrow marker for user-created links */
+svg.append("defs")
+  .append("marker")
+  .attr("id", "arrow")
+  .attr("viewBox", "0 -5 10 10")
+  .attr("refX", 14)   // tune with node radius
+  .attr("refY", 0)
+  .attr("markerWidth", 7)
+  .attr("markerHeight", 7)
+  .attr("orient", "auto")
+  .append("path")
+  .attr("d", "M0,-5L10,0L0,5")
+  .attr("fill", "#999");
+
+svg.append("defs")
+  .append("marker")
+  .attr("id", "arrow-faint")
+  .attr("viewBox", "0 -5 10 10")
+  .attr("refX", 14)
+  .attr("refY", 0)
+  .attr("markerWidth", 7)
+  .attr("markerHeight", 7)
+  .attr("orient", "auto")
+  .append("path")
+  .attr("d", "M0,-5L10,0L0,5")
+  .attr("fill", "#999")
+  .attr("fill-opacity", 0.08);
+
+/* Scales / forces */
+const radius = d => (d.type === "model" ? 18 : 6);
+
+const nodes = [];
+const layoutLinks = [];   // model—item links only for clustering/layout (rendered very faint)
+const userLinks = [];     // visible mapping links (item → model) created by drag-drop
+const modelLinks = []; // virtual springs between models derived from userLinks
+
+let draggingId = null; // id of the node currently being dragged
+
+// Pre-position models on a circle and items around their parent to avoid initial overlap
+const modelDefs = userGraph.nodes.filter(n => n.type === "model");
+const R = Math.min(width, height) * 0.26;
+const cx = width / 2, cy = height / 2;
+const modelPos = new Map();
+modelDefs.forEach((m, i) => {
+  const ang = (i / Math.max(1, modelDefs.length)) * 2 * Math.PI;
+  const x = cx + R * Math.cos(ang);
+  const y = cy + R * Math.sin(ang);
+  modelPos.set(m.id, { x, y });
+});
+
+for (const n of userGraph.nodes) {
+  if (n.type === "model") {
+    const pos = modelPos.get(n.id) || { x: cx, y: cy };
+    nodes.push({ id: n.id, type: "model", label: n.label || n.id, x: pos.x, y: pos.y });
+  } else if (n.type === "item") {
+    const parent = n.of && modelPos.get(n.of);
+    const jitter = () => (Math.random() - 0.5) * 40; // small random spread
+    const ix = parent ? parent.x + jitter() : cx + jitter();
+    const iy = parent ? parent.y + jitter() : cy + jitter();
+    nodes.push({ id: n.id, type: "item", label: n.label || n.id.split(".").pop(), model: n.of, x: ix, y: iy });
+    if (n.of) layoutLinks.push({ source: n.of, target: n.id });
+    if (Array.isArray(n.links)) {
+      for (const l of n.links) userLinks.push({ source: n.id, target: l.target, rel: l.rel });
+    }
+  }
+}
+
+function rebuildModelLinks() {
+  modelLinks.length = 0;
+  const seen = new Set();
+  for (const l of userLinks) {
+    const srcItemId = idOf(l.source);
+    const targetModel = idOf(l.target);
+    const srcModel = srcItemId.split(".")[0];
+    if (!srcModel || !targetModel || srcModel === targetModel) continue;
+    const key = srcModel < targetModel ? `${srcModel}|${targetModel}` : `${targetModel}|${srcModel}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    modelLinks.push({ source: srcModel, target: targetModel });
+  }
+}
+
+const userLinkForce = d3.forceLink(userLinks)
+  .id(d => d.id)
+  .distance(60)
+  .strength(0.12);
+
+const modelLinkForce = d3.forceLink(modelLinks)
+  .id(d => d.id)
+  .distance(100)
+  .strength(0.1);
+
+const simulation = d3.forceSimulation(nodes)
+  .force("link-layout", d3.forceLink(layoutLinks)
+    .id(d => d.id)
+    .distance(50)
+    .strength(l => (draggingId && (idOf(l.source) === draggingId || idOf(l.target) === draggingId)) ? 0 : 0.12)
+  )
+  .force("link-user", userLinkForce)
+  .force("link-model", modelLinkForce)
+  .force("charge", d3.forceManyBody().strength(-90))
+  .force("collide", d3.forceCollide().radius(d => radius(d) + 4))
+  .force("center", d3.forceCenter(width / 2, height / 2));
+
+/* Layers: zoom group, then layout links (faint), then user links (with arrows), then nodes */
+const gZoom        = svg.append("g");
+const gLinksLayout = gZoom.append("g").attr("stroke-linecap", "round");
+const gLinksUser   = gZoom.append("g").attr("stroke-linecap", "round");
+const gNodes       = gZoom.append("g");
+
+const zoom = d3.zoom()
+  .filter((event) => {
+    // Wheel-zoom only with Alt/Option held; panning only when Space is held.
+    if (event.type === "wheel") return event.altKey === true;
+    if (event.type === "mousedown") return spaceDown === true;
+    if (event.type === "dblclick") return false; // disable dblclick zoom
+    return false;
+  })
+  .scaleExtent([0.2, 4])
+  .on("start", () => { if (spaceDown) document.body.classList.add("panning"); })
+  .on("end",   () => {
+    document.body.classList.remove("panning");
+    // Briefly kick the simulation after pan/zoom so it "jiggles" and doesn't feel frozen
+    simulation.alphaTarget(0.35).restart();
+    setTimeout(() => simulation.alphaTarget(0), 400);
+  })
+  .on("zoom", (event) => { gZoom.attr("transform", event.transform); });
+svg.call(zoom);
+
+// Keep grabbing cursor while panning with Space held
+svg.on("mousedown.pan", () => { if (spaceDown) document.body.classList.add("panning"); });
+window.addEventListener("mouseup", () => document.body.classList.remove("panning"));
+
+/* Render helpers */
+function renderLayoutLinks() {
+  const sel = gLinksLayout.selectAll("line.layout")
+    .data(layoutLinks, d => `${d.source.id}-${d.target.id}`);
+
+  sel.enter()
+    .append("line")
+    .attr("class", "link layout invisible")
+    .attr("stroke-width", 1);
+
+  sel.exit().remove();
+}
+
+function renderUserLinks() {
+  const sel = gLinksUser.selectAll("line.user")
+    .data(userLinks, d => `${idOf(d.source)}→${idOf(d.target)}`);
+
+  sel.enter()
+    .append("line")
+    .attr("class", "link user")
+    .attr("stroke-width", 1)
+    .attr("marker-end", "url(#arrow-faint)");
+
+  sel.exit().remove();
+}
+
+function renderNodes() {
+  const sel = gNodes.selectAll("g.node").data(nodes, d => d.id);
+
+  const ent = sel.enter()
+    .append("g")
+    .attr("class", d => `node ${d.type}`)
+    .call(dragBehavior);
+
+  ent.append("circle")
+    .attr("r", d => radius(d));
+
+  ent.append("text")
+    .attr("dy", d => d.type === "model" ? "0.35em" : "-0.9em")
+    .attr("text-anchor", d => d.type === "model" ? "middle" : "middle")
+    .text(d => d.type === "model" ? d.id : d.label);
+
+  sel.exit().remove();
+}
+
+/* Drag behavior (only items create mappings) */
+const SNAP_DISTANCE = 56; // px — relaxed snap to counter collide spacing
+
+const dragBehavior = d3.drag()
+  .on("start", (event, d) => {
+    if (spaceDown) return;
+    d3.select(event.sourceEvent?.target?.ownerSVGElement ? event.subject : event.sourceEvent?.target)
+    if (!event.active) simulation.alphaTarget(0.3).restart();
+    d.fx = d.x;
+    d.fy = d.y;
+    draggingId = d.id;
+    simulation.alphaTarget(0.4).restart();
+    d3.select(event.sourceEvent?.target).classed("dragging", true);
+  })
+  .on("drag", (event, d) => {
+    if (spaceDown) return;
+    d.fx = event.x;
+    d.fy = event.y;
+
+    // Highlight potential drop targets if dragging an item
+    if (d.type === "item") {
+      const near = nearestModel(event.x, event.y, SNAP_DISTANCE);
+      gNodes.selectAll("g.node.model").classed("drop-target", md => near && md.id === near.id);
+    }
+  })
+  .on("end", (event, d) => {
+    if (spaceDown) return;
+    d3.select(event.sourceEvent?.target).classed("dragging", false);
+    if (!event.active) simulation.alphaTarget(0);
+
+    // If it's an item, and released near a model → create mapping link item→model
+    if (d.type === "item") {
+      const target = nearestModel(event.x, event.y, SNAP_DISTANCE);
+      gNodes.selectAll("g.node.model").classed("drop-target", false);
+
+      if (target && target.id) {
+        // Keep the item briefly near drop for visual stability
+        d.fx = event.x; d.fy = event.y;
+        setTimeout(() => { d.fx = null; d.fy = null; }, 150);
+        // Avoid duplicates
+        if (!userLinks.some(l => idOf(l.source) === d.id && idOf(l.target) === target.id)) {
+          userLinks.push({ source: d.id, target: target.id });
+          renderUserLinks();
+          userLinkForce.links(userLinks);
+          rebuildModelLinks();
+          modelLinkForce.links(modelLinks);
+          simulation.alpha(0.7).restart();
+          updateSidebar();
+        }
+      }
+    }
+    draggingId = null;
+    simulation.alphaTarget(0);
+
+    d.fx = null;
+    d.fy = null;
+  });
+
+function idOf(x) { return typeof x === "string" ? x : x.id; }
+
+function nearestModel(x, y, maxDist) {
+  let best = null, bestD2 = (maxDist ?? 24) ** 2;
+  for (const n of nodes) {
+    if (n.type !== "model") continue;
+    const dx = n.x - x, dy = n.y - y, d2 = dx*dx + dy*dy;
+    if (d2 < bestD2) { best = n; bestD2 = d2; }
+  }
+  return best;
+}
+
+/* Simulation tick */
+simulation.on("tick", () => {
+  gLinksLayout.selectAll("line.layout")
+    .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+    .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+
+  gLinksUser.selectAll("line.user")
+    .attr("x1", d => nodeById(idOf(d.source)).x)
+    .attr("y1", d => nodeById(idOf(d.source)).y)
+    .attr("x2", d => nodeById(idOf(d.target)).x)
+    .attr("y2", d => nodeById(idOf(d.target)).y);
+
+  gNodes.selectAll("g.node")
+    .attr("transform", d => `translate(${d.x},${d.y})`);
+});
+
+function nodeById(id) {
+  return nodes.find(n => n.id === id) || null;
+}
+
+function exportUserVisibleJson() {
+  const byId = new Map(nodes.map(n => [n.id, { id: n.id, type: n.type, label: n.label, ...(n.model ? { of: n.model } : {}) }]));
+  for (const l of userLinks) {
+    const src = typeof l.source === "string" ? l.source : l.source.id;
+    const tgt = typeof l.target === "string" ? l.target : l.target.id;
+    const n = byId.get(src);
+    if (!n) continue;
+    (n.links ??= []).push({ target: tgt, rel: l.rel || "mapsTo" });
+  }
+  return { version: userGraph.version || "1.0", nodes: Array.from(byId.values()) };
+}
+
+function updateSidebar() {
+  const view = document.getElementById("jsonView");
+  const status = document.getElementById("schemaStatus");
+  const data = exportUserVisibleJson();
+  const pretty = JSON.stringify(data, null, 2);
+  view.value = pretty;
+  const valid = validateUserGraph(data);
+  if (valid) {
+    status.textContent = "schema: OK";
+    status.style.color = "#137333";
+    hideError();
+  } else {
+    status.textContent = "schema: invalid";
+    status.style.color = "#d93025";
+  }
+}
+
+function showError(msg) {
+  const bar = document.getElementById("errorBar");
+  bar.textContent = msg;
+  bar.style.display = "block";
+}
+function hideError() {
+  const bar = document.getElementById("errorBar");
+  bar.style.display = "none";
+  bar.textContent = "";
+}
+
+function rebuildGraphFromUserGraph(newGraph) {
+  // clear arrays
+  nodes.length = 0;
+  layoutLinks.length = 0;
+  userLinks.length = 0;
+  modelLinks.length = 0;
+
+  for (const n of newGraph.nodes) {
+    if (n.type === "model") {
+      nodes.push({ id: n.id, type: "model", label: n.label || n.id });
+    } else if (n.type === "item") {
+      nodes.push({ id: n.id, type: "item", label: n.label || n.id.split(".").pop(), model: n.of });
+      if (n.of) layoutLinks.push({ source: n.of, target: n.id });
+      if (Array.isArray(n.links)) {
+        for (const l of n.links) userLinks.push({ source: n.id, target: l.target, rel: l.rel });
+      }
+    }
+  }
+
+  // update forces
+  userLinkForce.links(userLinks);
+  rebuildModelLinks();
+  modelLinkForce.links(modelLinks);
+
+  // reset simulation nodes
+  simulation.nodes(nodes);
+
+  // clear existing visuals and re-render
+  gLinksLayout.selectAll("*").remove();
+  gLinksUser.selectAll("*").remove();
+  gNodes.selectAll("*").remove();
+  renderLayoutLinks();
+  renderUserLinks();
+  renderNodes();
+
+  simulation.alpha(0.8).restart();
+}
+
+/* Zoom helpers */
+function zoomTo(transform) {
+  svg.transition().duration(300).call(zoom.transform, transform);
+}
+function currentTransform() {
+  const t = d3.zoomTransform(svg.node());
+  return t || d3.zoomIdentity;
+}
+function zoomIn()  { svg.transition().duration(200).call(zoom.scaleBy, 1.2); }
+function zoomOut() { svg.transition().duration(200).call(zoom.scaleBy, 1/1.2); }
+function zoomFit(pad = 40, extraOutSteps = 0) {
+  const xs = nodes.map(n => n.x), ys = nodes.map(n => n.y);
+  if (!xs.length || !ys.length) return;
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
+  const k = Math.min((width - pad*2) / w, (height - pad*2) / h);
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const transform = d3.zoomIdentity
+    .translate(width / 2, height / 2)
+    .scale(k)
+    .translate(-cx, -cy);
+  zoomTo(transform);
+  if (extraOutSteps > 0) {
+    // Fit'ten sonra biraz nefes alanı
+    const factor = Math.pow(1/1.2, extraOutSteps);
+    setTimeout(() => {
+      svg.transition().duration(220).call(zoom.scaleBy, factor);
+    }, 320);
+  }
+}
+
+/* Initial render */
+renderLayoutLinks();
+renderUserLinks();
+renderNodes();
+updateSidebar();
+zoomFit(120, 1);
+
+// Header actions
+const btnExport = document.getElementById("btnExport");
+const btnShare = document.getElementById("btnShare");
+const btnCloseModal = document.getElementById("btnCloseModal");
+const btnCopy = document.getElementById("btnCopy");
+const btnZoomIn  = document.getElementById("btnZoomIn");
+const btnZoomOut = document.getElementById("btnZoomOut");
+const btnFit     = document.getElementById("btnFit");
+const btnToggleSidebar = document.getElementById("btnToggleSidebar");
+
+btnExport.addEventListener("click", () => {
+  const triples = triplesExport();
+  const text = JSON.stringify({ triples }, null, 2);
+  openModalWithContent(text);
+});
+btnShare.addEventListener("click", () => {
+  alert("Share: coming soon. You can use Export for now.");
+});
+btnCloseModal.addEventListener("click", closeModal);
+
+btnZoomIn.addEventListener("click", zoomIn);
+btnZoomOut.addEventListener("click", zoomOut);
+btnFit.addEventListener("click", () => zoomFit(80, 2));
+
+document.getElementById("modalOverlay").addEventListener("click", closeModal);
+btnCopy.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(document.getElementById("exportContent").textContent);
+    btnCopy.textContent = "Copied!";
+    setTimeout(() => (btnCopy.textContent = "Copy to clipboard"), 1200);
+  } catch {
+    alert("Copy failed. Select and copy manually.");
+  }
+});
+btnToggleSidebar.addEventListener("click", () => {
+  document.body.classList.toggle("sidebar-hidden");
+});
+
+// Two-way editing: apply changes from textarea after 1s if valid
+let editTimer = null;
+const viewEl = document.getElementById("jsonView");
+viewEl.addEventListener("input", () => {
+  if (editTimer) clearTimeout(editTimer);
+  editTimer = setTimeout(() => {
+    try {
+      const parsed = JSON.parse(viewEl.value);
+      if (!validateUserGraph(parsed)) {
+        showError("Schema validation failed. Please check node and link fields.");
+        return;
+      }
+      hideError();
+      // apply
+      rebuildGraphFromUserGraph(parsed);
+      // sidebar reflects normalized state
+      updateSidebar();
+    } catch (e) {
+      showError("JSON parse error: " + e.message);
+    }
+  }, 1000);
+});
+
+/* -----------------------------
+ * Minimal export/import helpers
+ * -----------------------------
+ * You can open console and call:
+ *   exportMappings()
+ *   clearMappings()
+ */
+window.exportMappings = () => {
+  // Returns a simple JSON of item→model edges
+  const mappings = userLinks.map(l => ({ from: idOf(l.source), to: idOf(l.target) }));
+  console.log(JSON.stringify({ mappings }, null, 2));
+  alert("Mappings JSON printed to console.");
+};
+
+window.clearMappings = () => {
+  userLinks.splice(0, userLinks.length);
+  renderUserLinks();
+  simulation.alpha(0.5).restart();
+};
+</script>
